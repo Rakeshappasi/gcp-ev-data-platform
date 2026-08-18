@@ -1,0 +1,5 @@
+{
+    "project_id":"ev-data-platform-dev",
+    "bucket_name":"ev-data-lake-rakesh",
+    "environment":"dev"
+}

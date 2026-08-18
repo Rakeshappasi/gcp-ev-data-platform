@@ -1,0 +1,6 @@
+vechile_id,battery_percent,temperature,status
+101,90,27,active
+102,70,30,active
+103,40,34,charging
+104,20,37,critical
+105,85,28,active

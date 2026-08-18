@@ -1,0 +1,1 @@
+select count(*) as total_records from bronze_ds.users;

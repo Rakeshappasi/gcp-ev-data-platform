@@ -37,7 +37,8 @@ filename = f"users_{timestamp}.json"
 #______________________________
 
 with open(filename, 'w') as file:
-    json.dump(data,file,indent=4)
+    for record in data:
+        file.write(json.dumps(record) + "\n")
 print(f"local file created :{filename}")
 
 #Upload to GCS

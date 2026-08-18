@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+
+.venv/
+venv/
+
+*.log
+
+.env
+
+appliaction_default_credentails.json

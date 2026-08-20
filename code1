@@ -1,0 +1,227 @@
+from googlecloud import storage
+
+bucket_name = ""
+source=""
+destination=()
+
+client = storage.Client()
+bucket = client.bucket(bucket_name)
+blob = bucket.blob(destination)
+blob.upload_from_filename(source)
+import json
+import logging
+import os
+import sys
+import uuid
+from datetime import datetime, timezone
+ 
+import requests
+from google.cloud import bigquery
+from google.cloud import storage
+ 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    stream=sys.stdout,
+)
+ 
+PROJECT_ID = os.environ["PROJECT_ID"]
+ 
+BUCKET_NAME = os.environ["BUCKET_NAME"]
+ 
+API_URL = os.environ.get(
+    "API_URL",
+    "https://jsonplaceholder.typicode.com/users"
+)
+ 
+AUDIT_TABLE = os.environ.get(
+    "AUDIT_TABLE",
+    f"{PROJECT_ID}.metadata_prod.pipeline_audit"
+)
+ 
+PIPELINE_NAME = "ev_api_ingestion"
+ 
+ 
+def utc_now():
+    return datetime.now(timezone.utc)
+ 
+ 
+def insert_audit_record(
+    bigquery_client,
+    audit_table,
+    run_id,
+    pipeline_name,
+    status,
+    start_time,
+    end_time,
+    rows_loaded,
+    gcs_object,
+    error_message
+):
+ 
+    row = {
+        "run_id": str(run_id),
+        "pipeline_name": str(pipeline_name),
+        "status": str(status),
+        "start_time": start_time.isoformat()
+        if start_time else None,
+        "end_time": end_time.isoformat()
+        if end_time else None,
+        "rows_loaded": int(rows_loaded),
+        "gcs_object": gcs_object,
+        "error_message": error_message
+    }
+ 
+    errors = bigquery_client.insert_rows_json(
+        audit_table,
+        [row]
+    )
+ 
+    if errors:
+        raise RuntimeError(
+            f"BigQuery insert failed: {errors}"
+        )
+ 
+ 
+def build_ndjson(records):
+ 
+    return (
+        "\n".join(
+            json.dumps(record)
+            for record in records
+        )
+        + "\n"
+    )
+ 
+ 
+def main():
+ 
+    run_id = str(uuid.uuid4())
+ 
+    start_time = utc_now()
+ 
+    rows_loaded = 0
+ 
+    gcs_object = None
+ 
+    storage_client = storage.Client(
+        project=PROJECT_ID
+    )
+ 
+    bigquery_client = bigquery.Client(
+        project=PROJECT_ID
+    )
+ 
+    logging.info(
+        f"Pipeline started | run_id={run_id} | pipeline={PIPELINE_NAME}"
+    )
+ 
+    try:
+ 
+        logging.info(
+            f"Calling source API | url={API_URL}"
+        )
+ 
+        response = requests.get(
+            API_URL,
+            timeout=30
+        )
+ 
+        response.raise_for_status()
+ 
+        records = response.json()
+ 
+        if not isinstance(records, list):
+ 
+            raise ValueError(
+                "Expected API response to be a JSON array."
+            )
+ 
+        rows_loaded = len(records)
+ 
+        extraction_time = utc_now()
+ 
+        load_date = extraction_time.strftime(
+            "%Y-%m-%d"
+        )
+ 
+        timestamp = extraction_time.strftime(
+            "%Y%m%dT%H%M%SZ"
+        )
+ 
+        gcs_object = (
+            "bronze/api/users/"
+            f"load_date={load_date}/"
+            f"users_{timestamp}_{run_id}.ndjson"
+        )
+ 
+        ndjson_content = build_ndjson(
+            records
+        )
+ 
+        bucket = storage_client.bucket(
+            BUCKET_NAME
+        )
+ 
+        blob = bucket.blob(
+            gcs_object
+        )
+ 
+        blob.upload_from_string(
+            ndjson_content,
+            content_type="application/x-ndjson"
+        )
+ 
+        end_time = utc_now()
+ 
+        insert_audit_record(
+            bigquery_client=bigquery_client,
+            audit_table=AUDIT_TABLE,
+            run_id=run_id,
+            pipeline_name=PIPELINE_NAME,
+            status="SUCCESS",
+            start_time=start_time,
+            end_time=end_time,
+            rows_loaded=rows_loaded,
+            gcs_object=gcs_object,
+            error_message=None
+        )
+ 
+        logging.info(
+            f"SUCCESS | rows={rows_loaded}"
+        )
+ 
+    except Exception as e:
+ 
+        end_time = utc_now()
+ 
+        logging.exception(
+            f"Pipeline failed | run_id={run_id}"
+        )
+ 
+        try:
+ 
+            insert_audit_record(
+                bigquery_client=bigquery_client,
+                audit_table=AUDIT_TABLE,
+                run_id=run_id,
+                pipeline_name=PIPELINE_NAME,
+                status="FAILED",
+                start_time=start_time,
+                end_time=end_time,
+                rows_loaded=rows_loaded,
+                gcs_object=gcs_object,
+                error_message=str(e)
+            )
+ 
+        except Exception as audit_error:
+ 
+            logging.error(
+                f"Failed to write failure audit record: {audit_error}"
+            )
+ 
+        raise
+ 
+ 
+if __name__ == "__main__":
+    main()
